@@ -1,35 +1,47 @@
+// api/check.js
+// REAL RapidAPI breach lookup — production-ready
+
 export default async function handler(req, res) {
-  // CORS for Netlify frontend
+  // --- CORS (same as before) ---
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET,OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
 
+  // Preflight
   if (req.method === "OPTIONS") {
     return res.status(200).end();
   }
 
+  // Only allow GET for now (your frontend uses GET)
   if (req.method !== "GET") {
     return res.status(405).json({ error: "Method not allowed" });
   }
 
-  const email = (req.query.email || "").trim();
-  if (!email) return res.status(400).json({ error: "Missing email parameter" });
+  // --- Get email ---
+  const { email } = req.query;
 
+  if (!email) {
+    return res.status(400).json({ error: "Email is required" });
+  }
+
+  // --- ENV VARS ---
   const RAPIDAPI_KEY = process.env.RAPIDAPI_KEY;
-  const RAPIDAPI_HOST = "email-breach-search.p.rapidapi.com";
+  const RAPIDAPI_HOST = process.env.RAPIDAPI_HOST;
+  const RAPIDAPI_BASE = process.env.RAPIDAPI_BASE_URL;
 
-  if (!RAPIDAPI_KEY) {
+  if (!RAPIDAPI_KEY || !RAPIDAPI_HOST || !RAPIDAPI_BASE) {
     return res.status(500).json({
-      error: "Missing RAPIDAPI_KEY in server environment variables",
+      error: "Missing RapidAPI credentials on server.",
     });
   }
 
-  try {
-    const url = `https://${RAPIDAPI_HOST}/rapidapi/search-email/${encodeURIComponent(
-      email
-    )}`;
+  // --- Build the RapidAPI URL ---
+  // NOTE: Replace "/breachedaccount/" with YOUR exact endpoint from RapidAPI
+  const url = `${RAPIDAPI_BASE}/breachedaccount/${encodeURIComponent(email)}?truncateResponse=true`;
 
-    const upstream = await fetch(url, {
+  try {
+    // --- CALL RapidAPI ---
+    const upstreamRes = await fetch(url, {
       method: "GET",
       headers: {
         "x-rapidapi-key": RAPIDAPI_KEY,
@@ -37,35 +49,48 @@ export default async function handler(req, res) {
       },
     });
 
-    const data = await upstream.json();
+    const text = await upstreamRes.text();
 
-    if (!upstream.ok) {
-      console.error("Upstream error:", upstream.status, data);
-      return res.status(upstream.status).json({
-        error: data.message || "Upstream breach service error",
-        status: upstream.status,
+    let json;
+    try {
+      json = JSON.parse(text);
+    } catch {
+      json = { raw: text };
+    }
+
+    // --- Handle "no breach found" case ---
+    if (upstreamRes.status === 404) {
+      return res.status(200).json({
+        email,
+        pwned: false,
+        breach_count: 0,
+        breaches: [],
+        message: "No breaches found.",
       });
     }
 
-    // detect breach count based on API shape
-    let breachCount = 0;
-
-    if (Array.isArray(data?.breaches)) {
-      breachCount = data.breaches.length;
-    } else if (Array.isArray(data)) {
-      breachCount = data.length;
-    } else if (typeof data.breach_count === "number") {
-      breachCount = data.breach_count;
+    // --- Handle error responses ---
+    if (!upstreamRes.ok) {
+      return res.status(502).json({
+        error: "Error from RapidAPI.",
+        status: upstreamRes.status,
+        raw: json,
+      });
     }
 
+    // --- SUCCESS ---
     return res.status(200).json({
       email,
-      pwned: breachCount > 0,
-      breach_count: breachCount,
-      raw: data,
+      pwned: true,
+      breach_count: json.length || 1,
+      breaches: json,
+      message: "Live breach data fetched successfully.",
     });
+
   } catch (err) {
-    console.error("Server error:", err);
-    return res.status(500).json({ error: "Internal server error" });
+    console.error("Backend error:", err);
+    return res.status(500).json({
+      error: "Internal server error.",
+    });
   }
 }
