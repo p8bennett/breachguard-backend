@@ -1,8 +1,8 @@
 // api/check.js
-// REAL RapidAPI breach lookup — production-ready
+// Direct Have I Been Pwned API integration (no RapidAPI middleman)
 
 export default async function handler(req, res) {
-  // --- CORS (same as before) ---
+  // --- CORS ---
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET,OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
@@ -12,7 +12,7 @@ export default async function handler(req, res) {
     return res.status(200).end();
   }
 
-  // Only allow GET for now (your frontend uses GET)
+  // Only allow GET
   if (req.method !== "GET") {
     return res.status(405).json({ error: "Method not allowed" });
   }
@@ -24,28 +24,26 @@ export default async function handler(req, res) {
     return res.status(400).json({ error: "Email is required" });
   }
 
-  // --- ENV VARS ---
-  const RAPIDAPI_KEY = process.env.RAPIDAPI_KEY;
-  const RAPIDAPI_HOST = process.env.RAPIDAPI_HOST;
-  const RAPIDAPI_BASE = process.env.RAPIDAPI_BASE_URL;
+  // --- Get HIBP API Key from environment ---
+  const HIBP_API_KEY = process.env.HIBP_API_KEY;
 
-  if (!RAPIDAPI_KEY || !RAPIDAPI_HOST || !RAPIDAPI_BASE) {
+  if (!HIBP_API_KEY) {
     return res.status(500).json({
-      error: "Missing RapidAPI credentials on server.",
+      error: "Missing HIBP API key on server.",
     });
   }
 
-  // --- Build the RapidAPI URL ---
-  // NOTE: Replace "/breachedaccount/" with YOUR exact endpoint from RapidAPI
-  const url = `${RAPIDAPI_BASE}/breachedaccount/${encodeURIComponent(email)}?truncateResponse=true`;
+  // --- Build HIBP URL ---
+  // truncateResponse=false gives us FULL breach details (name, description, breach date, compromised data types)
+  const url = `https://haveibeenpwned.com/api/v3/breachedaccount/${encodeURIComponent(email)}?truncateResponse=false`;
 
   try {
-    // --- CALL RapidAPI ---
+    // --- Call HIBP directly ---
     const upstreamRes = await fetch(url, {
       method: "GET",
       headers: {
-        "x-rapidapi-key": RAPIDAPI_KEY,
-        "x-rapidapi-host": RAPIDAPI_HOST,
+        "hibp-api-key": ef939cc48af04a318a880cef172dbd0f,
+        "user-agent": "EmailBreachGuard-BreachChecker",
       },
     });
 
@@ -65,32 +63,42 @@ export default async function handler(req, res) {
         pwned: false,
         breach_count: 0,
         breaches: [],
-        message: "No breaches found.",
+        message: "Good news! No breaches found for this email.",
       });
     }
 
-    // --- Handle error responses ---
+    // --- Handle rate limiting (429) ---
+    if (upstreamRes.status === 429) {
+      return res.status(429).json({
+        error: "Rate limit exceeded. Please wait a moment and try again.",
+        retry_after: upstreamRes.headers.get("retry-after"),
+      });
+    }
+
+    // --- Handle other error responses ---
     if (!upstreamRes.ok) {
       return res.status(502).json({
-        error: "Error from RapidAPI.",
+        error: "Error from HIBP API.",
         status: upstreamRes.status,
         raw: json,
       });
     }
 
     // --- SUCCESS ---
+    // HIBP returns an array of breach objects with full details
     return res.status(200).json({
       email,
       pwned: true,
-      breach_count: json.length || 1,
+      breach_count: Array.isArray(json) ? json.length : 1,
       breaches: json,
-      message: "Live breach data fetched successfully.",
+      message: "Breach data retrieved successfully.",
     });
 
   } catch (err) {
     console.error("Backend error:", err);
     return res.status(500).json({
       error: "Internal server error.",
+      details: err.message,
     });
   }
 }
